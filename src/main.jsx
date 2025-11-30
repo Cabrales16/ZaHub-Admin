@@ -16,6 +16,7 @@ import ConfiguracionPage from "./modules/admin/ConfiguracionPage";
 import IngredientesPage from "./modules/admin/IngredientesPage";
 import PizzasPage from "./modules/admin/PizzasPage";
 import UsuariosPage from "./modules/admin/UsuariosPage";
+import PedidoDetallePage from "./modules/admin/pages/PedidoDetallePage";
 
 ReactDOM.createRoot(document.getElementById("root")).render(
   <React.StrictMode>
@@ -44,6 +45,7 @@ ReactDOM.createRoot(document.getElementById("root")).render(
               <Route path="ingredientes" element={<IngredientesPage />} />
               <Route path="pizzas" element={<PizzasPage />} />
               <Route path="usuarios" element={<UsuariosPage />} />
+              <Route path="pedidos/:id" element={<PedidoDetallePage />} />
             </Route>
 
             {/* Redirección por defecto al dashboard */}
