@@ -1,5 +1,6 @@
 // src/admin/pages/PedidosPage.jsx
 import { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { supabase } from '../../supabaseClient';
 import {
   User,
@@ -11,6 +12,7 @@ import {
   PlusCircle,
   ChevronLeft,
   ChevronRight,
+  Search,
 } from 'lucide-react';
 import { useAuth } from '../auth/AuthContext';
 
@@ -25,7 +27,6 @@ const ESTADOS = [
 ];
 
 const ESTADOS_FILTRO = ['TODOS', ...ESTADOS];
-const ITEMS_PER_PAGE = 9; // 3 x 4
 
 function getEstadoClasses(estado) {
   switch (estado) {
@@ -49,11 +50,28 @@ function getEstadoClasses(estado) {
 
 export default function PedidosPage() {
   const { userProfile, loading: authLoading } = useAuth();
+  const navigate = useNavigate();
+
   const [pedidos, setPedidos] = useState([]);
   const [loading, setLoading] = useState(false);
   const [filtroEstado, setFiltroEstado] = useState('TODOS');
+  const [busqueda, setBusqueda] = useState('');
   const [errorCarga, setErrorCarga] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
+  const [itemsPerPage, setItemsPerPage] = useState(9); // responsive
+
+  // --- responsive items per page (9 desktop, 6 pantallas más pequeñas) ---
+  useEffect(() => {
+    const updateItemsPerPage = () => {
+      if (typeof window === 'undefined') return;
+      const w = window.innerWidth;
+      setItemsPerPage(w < 1280 ? 6 : 9);
+    };
+
+    updateItemsPerPage();
+    window.addEventListener('resize', updateItemsPerPage);
+    return () => window.removeEventListener('resize', updateItemsPerPage);
+  }, []);
 
   const fetchPedidos = async () => {
     setLoading(true);
@@ -95,25 +113,60 @@ export default function PedidosPage() {
     fetchPedidos();
   }, [authLoading, userProfile?.id]);
 
-  // Cuando cambie el filtro o la lista, volvemos a la página 1
+  // reset página cuando cambian filtros, búsqueda o tamaño de página
   useEffect(() => {
     setCurrentPage(1);
-  }, [filtroEstado, pedidos.length]);
+  }, [filtroEstado, pedidos.length, busqueda, itemsPerPage]);
 
-  const cambiarEstado = async (pedidoId, nuevoEstado) => {
+  /**
+   * Cambiar estado desde la tarjeta:
+   * - Actualiza pedidos
+   * - Inserta registro en historial_estado_pedido (cambiado_por_id)
+   */
+  const cambiarEstado = async (pedido, nuevoEstado) => {
+    if (!pedido) return;
+    if (nuevoEstado === pedido.estado) return;
+
+    // snapshot para poder revertir
+    const estadoAnterior = pedido.estado;
+
+    // actualización optimista en UI
     setPedidos((prev) =>
-      prev.map((p) => (p.id === pedidoId ? { ...p, estado: nuevoEstado } : p))
+      prev.map((p) =>
+        p.id === pedido.id ? { ...p, estado: nuevoEstado } : p
+      )
     );
 
-    const { error } = await supabase
-      .from('pedidos')
-      .update({ estado: nuevoEstado })
-      .eq('id', pedidoId);
+    try {
+      // 1) actualizar tabla pedidos
+      const { error: pedidoError } = await supabase
+        .from('pedidos')
+        .update({ estado: nuevoEstado })
+        .eq('id', pedido.id);
 
-    if (error) {
-      console.error('Error cambiando estado:', error);
+      if (pedidoError) throw pedidoError;
+
+      // 2) registrar historial de estado
+      const { error: histError } = await supabase
+        .from('historial_estado_pedido')
+        .insert({
+          pedido_id: pedido.id,
+          estado: nuevoEstado,
+          cambiado_por_id: userProfile?.id ?? null,
+          comentario: `Estado actualizado a ${nuevoEstado} desde la lista de pedidos.`,
+        });
+
+      if (histError) throw histError;
+    } catch (err) {
+      console.error('Error cambiando estado de pedido:', err);
       alert('No se pudo cambiar el estado. Se revertirá.');
-      fetchPedidos();
+
+      // revertir en UI
+      setPedidos((prev) =>
+        prev.map((p) =>
+          p.id === pedido.id ? { ...p, estado: estadoAnterior } : p
+        )
+      );
     }
   };
 
@@ -141,17 +194,30 @@ export default function PedidosPage() {
     }
   };
 
-  // ==== Filtro + paginación ====
-  const pedidosFiltrados = pedidos.filter((p) =>
-    filtroEstado === 'TODOS' ? true : p.estado === filtroEstado
-  );
+  // ==== Filtro + búsqueda + paginación ====
+  const pedidosFiltrados = pedidos.filter((p) => {
+    const matchEstado =
+      filtroEstado === 'TODOS' ? true : p.estado === filtroEstado;
+
+    const q = busqueda.trim().toLowerCase();
+    if (!q) return matchEstado;
+
+    const id = p.id?.toLowerCase() ?? '';
+    const nombre = p.usuarios_app?.nombre?.toLowerCase() ?? '';
+    const direccion = p.direccion_entrega?.toLowerCase() ?? '';
+
+    const matchTexto =
+      id.includes(q) || nombre.includes(q) || direccion.includes(q);
+
+    return matchEstado && matchTexto;
+  });
 
   const totalPedidos = pedidosFiltrados.length;
-  const totalPages = Math.max(1, Math.ceil(totalPedidos / ITEMS_PER_PAGE));
+  const totalPages = Math.max(1, Math.ceil(totalPedidos / itemsPerPage));
   const safePage = Math.min(currentPage, totalPages);
 
-  const startIndex = (safePage - 1) * ITEMS_PER_PAGE;
-  const endIndex = startIndex + ITEMS_PER_PAGE;
+  const startIndex = (safePage - 1) * itemsPerPage;
+  const endIndex = startIndex + itemsPerPage;
   const pedidosPagina = pedidosFiltrados.slice(startIndex, endIndex);
 
   const handlePrev = () => {
@@ -164,6 +230,17 @@ export default function PedidosPage() {
 
   const handleGoto = (page) => {
     setCurrentPage(page);
+  };
+
+  const handleCardClick = (id) => {
+    navigate(`/admin/pedidos/${id}`);
+  };
+
+  const handleCardKeyDown = (e, id) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      navigate(`/admin/pedidos/${id}`);
+    }
   };
 
   if (authLoading) {
@@ -184,64 +261,87 @@ export default function PedidosPage() {
 
   return (
     <div className="space-y-5">
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-        <div className="flex items-center gap-3">
-          <div className="h-9 w-9 rounded-md bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 flex items-center justify-center">
-            <DollarSign className="w-4 h-4" />
+      {/* Header (mismo patrón que Usuarios) */}
+      <div className="flex items-center gap-3">
+        <div className="h-9 w-9 rounded-md bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900 flex items-center justify-center">
+          <DollarSign className="w-4 h-4" />
+        </div>
+        <div>
+          <div className="flex items-center gap-2">
+            <h1 className="text-lg font-semibold text-slate-900 dark:text-slate-100">
+              Pedidos
+            </h1>
+            <span className="inline-flex items-center px-2 py-[2px] rounded-full bg-emerald-500/10 dark:bg-emerald-500/20 text-[11px] text-emerald-700 dark:text-emerald-300 border border-emerald-500/40">
+              En vivo
+            </span>
           </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <h1 className="text-lg font-semibold text-slate-100">
-                Pedidos
-              </h1>
-              <span className="inline-flex items-center gap-1 px-2 py-[2px] rounded-full bg-emerald-500/15 text-[11px] text-emerald-300 border border-emerald-500/40">
-                <span className="inline-flex h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
-                En vivo
-              </span>
-            </div>
-            <p className="text-xs text-slate-400 mt-1">
-              Gestiona los pedidos en tiempo real desde este panel.
-            </p>
+          <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+            Gestiona los pedidos en tiempo real desde este panel.
+          </p>
+        </div>
+      </div>
+
+      {/* Barra de acciones: búsqueda + filtro + botón de prueba */}
+      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg p-4 flex flex-wrap gap-4 items-end shadow-sm">
+        {/* Buscar pedido */}
+        <div className="flex-1 min-w-[220px]">
+          <label className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1">
+            Buscar pedido
+          </label>
+          <div className="relative">
+            <span className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-400 dark:text-slate-500">
+              <Search className="w-4 h-4" />
+            </span>
+            <input
+              type="text"
+              value={busqueda}
+              onChange={(e) => setBusqueda(e.target.value)}
+              placeholder="ID, cliente o dirección..."
+              className="w-full pl-8 pr-3 py-2 border border-slate-300 dark:border-slate-700 rounded-md text-sm bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-slate-900/5 dark:focus:ring-slate-300/10"
+            />
           </div>
         </div>
 
-        {/* Acciones / filtro */}
-        <div className="flex flex-col sm:flex-row sm:items-center gap-3">
-          <button
-            onClick={crearPedidoDePrueba}
-            className="inline-flex items-center gap-2 bg-emerald-600 text-white text-xs sm:text-sm px-4 py-2 rounded-md hover:bg-emerald-700 dark:bg-emerald-500 dark:hover:bg-emerald-600 active:scale-[0.98] transition whitespace-nowrap"
-          >
-            <PlusCircle className="w-4 h-4" />
-            <span>Crear pedido de prueba</span>
-          </button>
-
-          <div className="flex flex-col">
-            <div className="flex items-center gap-2 text-[11px] text-slate-300 mb-1">
-              <Filter className="w-3 h-3" />
-              <span>Estado</span>
-            </div>
-            <div className="relative">
-              <select
-                value={filtroEstado}
-                onChange={(e) => setFiltroEstado(e.target.value)}
-                className="appearance-none border border-slate-700 rounded-md text-xs sm:text-sm pl-3 pr-8 py-1.5 bg-slate-900 text-slate-100 focus:outline-none focus:ring-2 focus:ring-orange-500/40 focus:border-orange-500/60"
-              >
-                {ESTADOS_FILTRO.map((est) => (
-                  <option key={est} value={est}>
-                    {est}
-                  </option>
-                ))}
-              </select>
-              <ChevronDown className="w-4 h-4 text-slate-500 absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none" />
-            </div>
+        {/* Filtro por estado */}
+        <div className="w-full sm:w-56">
+          <label className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1">
+            Estado
+          </label>
+          <div className="relative">
+            <span className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-400 dark:text-slate-500">
+              <Filter className="w-4 h-4" />
+            </span>
+            <select
+              value={filtroEstado}
+              onChange={(e) => setFiltroEstado(e.target.value)}
+              className="w-full appearance-none pl-8 pr-8 py-2 border border-slate-300 dark:border-slate-700 rounded-md text-sm bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-slate-900/5 dark:focus:ring-slate-300/10"
+            >
+              {ESTADOS_FILTRO.map((est) => (
+                <option key={est} value={est}>
+                  {est}
+                </option>
+              ))}
+            </select>
+            <ChevronDown className="w-4 h-4 text-slate-500 absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none" />
           </div>
         </div>
+
+        {/* Botón crear pedido de prueba (más pequeño) */}
+        <button
+          type="button"
+          onClick={crearPedidoDePrueba}
+          className="inline-flex items-center gap-1.5 bg-emerald-600 dark:bg-emerald-500 hover:bg-emerald-700 dark:hover:bg-emerald-600 text-[11px] sm:text-xs px-3 py-1.5 rounded-md text-white transition"
+        >
+          <PlusCircle className="w-3 h-3" />
+          <span>Crear pedido de prueba</span>
+        </button>
       </div>
 
       {/* Estados de carga / error */}
       {loading && (
-        <p className="text-sm text-slate-400">Cargando pedidos...</p>
+        <p className="text-sm text-slate-500 dark:text-slate-400">
+          Cargando pedidos...
+        </p>
       )}
 
       {!loading && errorCarga && (
@@ -249,7 +349,7 @@ export default function PedidosPage() {
       )}
 
       {!loading && !errorCarga && totalPedidos === 0 && (
-        <p className="text-sm text-slate-400">
+        <p className="text-sm text-slate-500 dark:text-slate-400">
           No hay pedidos para el filtro seleccionado.
         </p>
       )}
@@ -257,17 +357,21 @@ export default function PedidosPage() {
       {/* Grid de cards + paginación */}
       {!loading && !errorCarga && totalPedidos > 0 && (
         <>
-          {/* GRID 3x4 responsive */}
+          {/* GRID responsive */}
           <div className="grid gap-4 grid-cols-1 md:grid-cols-2 xl:grid-cols-3">
             {pedidosPagina.map((p) => (
               <div
                 key={p.id}
-                className="bg-slate-900/70 border border-slate-800 rounded-xl p-4 flex flex-col justify-between gap-3 transition hover:border-orange-500/40 hover:shadow-[0_0_0_1px_rgba(249,115,22,0.3)]"
+                role="button"
+                tabIndex={0}
+                onClick={() => handleCardClick(p.id)}
+                onKeyDown={(e) => handleCardKeyDown(e, p.id)}
+                className="bg-white dark:bg-slate-900/70 border border-slate-200 dark:border-slate-800 rounded-xl p-4 flex flex-col justify-between gap-3 transition hover:border-orange-500/40 hover:shadow-[0_0_0_1px_rgba(249,115,22,0.3)] cursor-pointer focus:outline-none focus:ring-2 focus:ring-orange-500/60 focus:ring-offset-2 focus:ring-offset-slate-900"
               >
                 <div className="space-y-2">
-                  <p className="flex items-center justify-between text-[11px] text-slate-400">
+                  <p className="flex items-center justify-between text-[11px] text-slate-500 dark:text-slate-400">
                     <span className="inline-flex items-center gap-2">
-                      <Clock className="w-4 h-4" />
+                      <Clock className="w-4 h-4 text-slate-400" />
                       <span>#{p.id.slice(0, 8)}</span>
                     </span>
                     <span>
@@ -280,7 +384,7 @@ export default function PedidosPage() {
                     </span>
                   </p>
 
-                  <p className="flex items-center gap-2 text-sm font-medium text-slate-100">
+                  <p className="flex items-center gap-2 text-sm font-medium text-slate-900 dark:text-slate-100">
                     <User className="w-4 h-4 text-slate-400" />
                     <span className="truncate">
                       Cliente:{' '}
@@ -290,12 +394,12 @@ export default function PedidosPage() {
                     </span>
                   </p>
 
-                  <p className="flex items-center gap-2 text-sm text-slate-200">
+                  <p className="flex items-center gap-2 text-sm text-slate-800 dark:text-slate-200">
                     <DollarSign className="w-4 h-4 text-slate-400" />
                     <span>Total: ${p.total}</span>
                   </p>
 
-                  <p className="flex items-center gap-2 text-sm text-slate-200">
+                  <p className="flex items-center gap-2 text-sm text-slate-800 dark:text-slate-200">
                     <span
                       className={
                         'inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-semibold ' +
@@ -305,13 +409,13 @@ export default function PedidosPage() {
                       {p.estado}
                     </span>
                     <span className="text-slate-500">·</span>
-                    <span className="text-[11px] uppercase tracking-wide text-slate-300">
+                    <span className="text-[11px] uppercase tracking-wide text-slate-500 dark:text-slate-300">
                       Pago: {p.metodo_pago ?? 'N/A'}
                     </span>
                   </p>
 
-                  <p className="flex items-center gap-2 text-[11px] text-slate-400">
-                    <MapPin className="w-4 h-4" />
+                  <p className="flex items-center gap-2 text-[11px] text-slate-500 dark:text-slate-400">
+                    <MapPin className="w-4 h-4 text-slate-400" />
                     <span className="line-clamp-2">
                       Dirección: {p.direccion_entrega}
                     </span>
@@ -319,14 +423,19 @@ export default function PedidosPage() {
                 </div>
 
                 {/* Selector de estado */}
-                <div className="flex items-center justify-between pt-2 border-t border-slate-800 mt-1">
-                  <span className="text-[11px] text-slate-500">
+                <div
+                  className="flex items-center justify-between pt-2 border-t border-slate-200 dark:border-slate-800 mt-1"
+                  onClick={(e) => e.stopPropagation()}
+                  onKeyDown={(e) => e.stopPropagation()}
+                >
+                  <span className="text-[11px] text-slate-500 dark:text-slate-400">
                     Cambiar estado
                   </span>
                   <select
                     value={p.estado}
-                    onChange={(e) => cambiarEstado(p.id, e.target.value)}
-                    className="border border-slate-700 rounded-md px-3 py-1.5 text-xs bg-slate-950 text-slate-100 focus:outline-none focus:ring-2 focus:ring-orange-500/40 focus:border-orange-500/60 cursor-pointer"
+                    onClick={(e) => e.stopPropagation()}
+                    onChange={(e) => cambiarEstado(p, e.target.value)}
+                    className="border border-slate-300 dark:border-slate-700 rounded-md px-3 py-1.5 text-xs bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-orange-500/40 focus:border-orange-500/60 cursor-pointer"
                   >
                     {ESTADOS.map((est) => (
                       <option key={est} value={est}>
@@ -339,15 +448,19 @@ export default function PedidosPage() {
             ))}
           </div>
 
-          {/* PAGINACIÓN CREATIVA */}
+          {/* PAGINACIÓN */}
           {totalPages > 1 && (
             <div className="mt-4 flex flex-col md:flex-row md:items-center md:justify-between gap-3 text-xs text-slate-400">
               <p>
                 Mostrando{' '}
-                <span className="text-slate-200">
-                  {startIndex + 1}–{Math.min(endIndex, totalPedidos)}
+                <span className="text-slate-700 dark:text-slate-200">
+                  {startIndex + 1}–
+                  {Math.min(endIndex, totalPedidos)}
                 </span>{' '}
-                de <span className="text-slate-200">{totalPedidos}</span>{' '}
+                de{' '}
+                <span className="text-slate-700 dark:text-slate-200">
+                  {totalPedidos}
+                </span>{' '}
                 pedidos
               </p>
 
@@ -358,15 +471,14 @@ export default function PedidosPage() {
                   disabled={safePage === 1}
                   className={`inline-flex items-center gap-1 px-2 py-1 rounded-md border text-[11px] transition ${
                     safePage === 1
-                      ? 'border-slate-700 text-slate-600 cursor-not-allowed'
-                      : 'border-slate-600 text-slate-200 hover:border-orange-500 hover:text-orange-300'
+                      ? 'border-slate-300 dark:border-slate-700 text-slate-400 dark:text-slate-600 cursor-not-allowed'
+                      : 'border-slate-400 dark:border-slate-600 text-slate-700 dark:text-slate-200 hover:border-orange-500 hover:text-orange-300'
                   }`}
                 >
                   <ChevronLeft className="w-3 h-3" />
                   <span>Anterior</span>
                 </button>
 
-                {/* Píldoras de páginas */}
                 <div className="flex items-center gap-1">
                   {Array.from({ length: totalPages }, (_, i) => i + 1).map(
                     (page) => (
@@ -377,7 +489,7 @@ export default function PedidosPage() {
                         className={`w-7 h-7 rounded-full text-[11px] flex items-center justify-center border transition ${
                           page === safePage
                             ? 'bg-orange-500 border-orange-500 text-white shadow-[0_0_0_1px_rgba(248,250,252,0.2)]'
-                            : 'border-slate-700 text-slate-300 hover:border-orange-500 hover:text-orange-300'
+                            : 'border-slate-400 dark:border-slate-700 text-slate-700 dark:text-slate-300 hover:border-orange-500 hover:text-orange-300'
                         }`}
                       >
                         {page}
@@ -392,8 +504,8 @@ export default function PedidosPage() {
                   disabled={safePage === totalPages}
                   className={`inline-flex items-center gap-1 px-2 py-1 rounded-md border text-[11px] transition ${
                     safePage === totalPages
-                      ? 'border-slate-700 text-slate-600 cursor-not-allowed'
-                      : 'border-slate-600 text-slate-200 hover:border-orange-500 hover:text-orange-300'
+                      ? 'border-slate-300 dark:border-slate-700 text-slate-400 dark:text-slate-600 cursor-not-allowed'
+                      : 'border-slate-400 dark:border-slate-600 text-slate-700 dark:text-slate-200 hover:border-orange-500 hover:text-orange-300'
                   }`}
                 >
                   <span>Siguiente</span>

@@ -9,9 +9,14 @@ import {
   Shield,
   ChevronLeft,
   ChevronRight,
+  Filter,
+  ChevronDown,
+  XCircle,
+  RotateCw,
 } from 'lucide-react';
 
 const ROLES = ['ADMIN', 'CAJERO', 'COCINA', 'REPARTIDOR', 'CLIENTE'];
+const ESTADOS_USUARIO = ['TODOS', 'ACTIVOS', 'INACTIVOS'];
 const ITEMS_PER_PAGE = 10;
 
 export default function UsuariosPage() {
@@ -19,6 +24,8 @@ export default function UsuariosPage() {
   const [loading, setLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState('');
   const [busqueda, setBusqueda] = useState('');
+  const [filtroRol, setFiltroRol] = useState('TODOS');
+  const [filtroEstado, setFiltroEstado] = useState('TODOS');
   const [currentPage, setCurrentPage] = useState(1);
 
   const fetchUsuarios = async () => {
@@ -45,25 +52,34 @@ export default function UsuariosPage() {
     fetchUsuarios();
   }, []);
 
+  // búsqueda + filtros de rol / estado
   const usuariosFiltrados = useMemo(() => {
     const q = busqueda.trim().toLowerCase();
-    if (!q) return usuarios;
+
     return usuarios.filter((u) => {
       const nombre = u.nombre?.toLowerCase() ?? '';
       const email = u.email?.toLowerCase() ?? '';
-      return nombre.includes(q) || email.includes(q);
-    });
-  }, [busqueda, usuarios]);
+      const matchBusqueda = !q || nombre.includes(q) || email.includes(q);
 
-  // reset página cuando cambia búsqueda o lista
+      const rolUsuario = u.rol || 'CLIENTE';
+      const matchRol = filtroRol === 'TODOS' ? true : rolUsuario === filtroRol;
+
+      let matchEstado = true;
+      if (filtroEstado === 'ACTIVOS') matchEstado = !!u.activo;
+      else if (filtroEstado === 'INACTIVOS') matchEstado = !u.activo;
+
+      return matchBusqueda && matchRol && matchEstado;
+    });
+  }, [busqueda, usuarios, filtroRol, filtroEstado]);
+
+  // reset página cuando cambia búsqueda, lista o filtros
   useEffect(() => {
     setCurrentPage(1);
-  }, [busqueda, usuarios.length]);
+  }, [busqueda, usuarios.length, filtroRol, filtroEstado]);
 
   const toggleActivo = async (usuario) => {
     const nuevoEstado = !usuario.activo;
 
-    // UI optimista
     setUsuarios((prev) =>
       prev.map((u) =>
         u.id === usuario.id ? { ...u, activo: nuevoEstado } : u
@@ -83,7 +99,6 @@ export default function UsuariosPage() {
   };
 
   const cambiarRol = async (usuario, nuevoRol) => {
-    // UI optimista
     setUsuarios((prev) =>
       prev.map((u) =>
         u.id === usuario.id ? { ...u, rol: nuevoRol } : u
@@ -123,6 +138,15 @@ export default function UsuariosPage() {
     setCurrentPage(page);
   };
 
+  const limpiarFiltros = () => {
+    setBusqueda('');
+    setFiltroRol('TODOS');
+    setFiltroEstado('TODOS');
+  };
+
+  const hayFiltrosActivos =
+    busqueda.trim() !== '' || filtroRol !== 'TODOS' || filtroEstado !== 'TODOS';
+
   return (
     <div className="space-y-5">
       {/* Header */}
@@ -147,6 +171,7 @@ export default function UsuariosPage() {
 
       {/* Barra de búsqueda y filtros */}
       <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg p-4 flex flex-wrap gap-4 items-end shadow-sm">
+        {/* Buscar */}
         <div className="flex-1 min-w-[220px]">
           <label className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1">
             Buscar usuario
@@ -165,13 +190,88 @@ export default function UsuariosPage() {
           </div>
         </div>
 
-        <button
-          type="button"
-          onClick={fetchUsuarios}
-          className="inline-flex items-center gap-2 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-xs px-3 py-2 rounded-md text-slate-800 dark:text-slate-100 transition"
-        >
-          <span>Recargar lista</span>
-        </button>
+        {/* Filtros por rol / estado */}
+        <div className="flex flex-wrap gap-3 items-end">
+          {/* Rol */}
+          <div className="w-40">
+            <label className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1">
+              Rol
+            </label>
+            <div className="relative">
+              <span className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-400 dark:text-slate-500">
+                <Filter className="w-3 h-3" />
+              </span>
+              <select
+                value={filtroRol}
+                onChange={(e) => setFiltroRol(e.target.value)}
+                className="w-full appearance-none pl-7 pr-7 py-2 border border-slate-300 dark:border-slate-700 rounded-md text-xs bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-slate-900/5 dark:focus:ring-slate-300/10"
+              >
+                <option value="TODOS">Todos los roles</option>
+                {ROLES.map((rol) => (
+                  <option key={rol} value={rol}>
+                    {rol}
+                  </option>
+                ))}
+              </select>
+              <ChevronDown className="w-3 h-3 text-slate-500 absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none" />
+            </div>
+          </div>
+
+          {/* Estado */}
+          <div className="w-40">
+            <label className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1">
+              Estado
+            </label>
+            <div className="relative">
+              <span className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-400 dark:text-slate-500">
+                <ToggleRight className="w-3 h-3" />
+              </span>
+              <select
+                value={filtroEstado}
+                onChange={(e) => setFiltroEstado(e.target.value)}
+                className="w-full appearance-none pl-7 pr-7 py-2 border border-slate-300 dark:border-slate-700 rounded-md text-xs bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-slate-900/5 dark:focus:ring-slate-300/10"
+              >
+                {ESTADOS_USUARIO.map((estado) => (
+                  <option key={estado} value={estado}>
+                    {estado === 'TODOS'
+                      ? 'Todos'
+                      : estado === 'ACTIVOS'
+                      ? 'Activos'
+                      : 'Inactivos'}
+                  </option>
+                ))}
+              </select>
+              <ChevronDown className="w-3 h-3 text-slate-500 absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none" />
+            </div>
+          </div>
+
+          {/* Botones acción (solo iconos) */}
+          <div className="flex items-center gap-2 ml-1">
+            {/* Limpiar filtros: solo si hay filtros activos */}
+            {hayFiltrosActivos && (
+              <button
+                type="button"
+                onClick={limpiarFiltros}
+                className="inline-flex items-center justify-center h-8 w-8 rounded-md border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-100 transition"
+                title="Limpiar filtros"
+                aria-label="Limpiar filtros"
+              >
+                <XCircle className="w-4 h-4" />
+              </button>
+            )}
+
+            {/* Recargar lista: siempre visible */}
+            <button
+              type="button"
+              onClick={fetchUsuarios}
+              className="inline-flex items-center justify-center h-8 w-8 rounded-md border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-100 transition"
+              title="Recargar lista"
+              aria-label="Recargar lista"
+            >
+              <RotateCw className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
       </div>
 
       {/* Estados de carga / error */}
@@ -293,12 +393,14 @@ export default function UsuariosPage() {
             <div className="mt-4 flex flex-col md:flex-row md:items-center md:justify-between gap-3 text-xs text-slate-400">
               <p>
                 Mostrando{' '}
-                <span className="text-slate-200">
+                <span className="text-slate-700 dark:text-slate-200">
                   {startIndex + 1}–
                   {Math.min(endIndex, totalUsuarios)}
                 </span>{' '}
                 de{' '}
-                <span className="text-slate-200">{totalUsuarios}</span>{' '}
+                <span className="text-slate-700 dark:text-slate-200">
+                  {totalUsuarios}
+                </span>{' '}
                 usuarios
               </p>
 
@@ -309,8 +411,8 @@ export default function UsuariosPage() {
                   disabled={safePage === 1}
                   className={`inline-flex items-center gap-1 px-2 py-1 rounded-md border text-[11px] transition ${
                     safePage === 1
-                      ? 'border-slate-700 text-slate-600 cursor-not-allowed'
-                      : 'border-slate-600 text-slate-200 hover:border-orange-500 hover:text-orange-300'
+                      ? 'border-slate-300 dark:border-slate-700 text-slate-400 dark:text-slate-600 cursor-not-allowed'
+                      : 'border-slate-400 dark:border-slate-600 text-slate-700 dark:text-slate-200 hover:border-orange-500 hover:text-orange-300'
                   }`}
                 >
                   <ChevronLeft className="w-3 h-3" />
@@ -327,7 +429,7 @@ export default function UsuariosPage() {
                         className={`w-7 h-7 rounded-full text-[11px] flex items-center justify-center border transition ${
                           page === safePage
                             ? 'bg-orange-500 border-orange-500 text-white shadow-[0_0_0_1px_rgba(248,250,252,0.2)]'
-                            : 'border-slate-700 text-slate-300 hover:border-orange-500 hover:text-orange-300'
+                            : 'border-slate-400 dark:border-slate-700 text-slate-700 dark:text-slate-300 hover:border-orange-500 hover:text-orange-300'
                         }`}
                       >
                         {page}
@@ -342,8 +444,8 @@ export default function UsuariosPage() {
                   disabled={safePage === totalPages}
                   className={`inline-flex items-center gap-1 px-2 py-1 rounded-md border text-[11px] transition ${
                     safePage === totalPages
-                      ? 'border-slate-700 text-slate-600 cursor-not-allowed'
-                      : 'border-slate-600 text-slate-200 hover:border-orange-500 hover:text-orange-300'
+                      ? 'border-slate-300 dark:border-slate-700 text-slate-400 dark:text-slate-600 cursor-not-allowed'
+                      : 'border-slate-400 dark:border-slate-600 text-slate-700 dark:text-slate-200 hover:border-orange-500 hover:text-orange-300'
                   }`}
                 >
                   <span>Siguiente</span>
